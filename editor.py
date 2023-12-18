@@ -1,11 +1,28 @@
 import sys
-
+import os
 import pygame
 
-from scripts.utils import load_images
-from scripts.tilemap import Tilemap
+from codefiles.scripts.utils import load_images
+from codefiles.scripts.tilemap import Tilemap
 
 RENDER_SCALE = 2.0
+
+SCREEN_WIDTH = 640 * 2
+SCREEN_HEIGHT = 480 * 2
+DISPLAY_WIDTH = 320 * 2
+DISPLAY_HEIGHT = 240 * 2
+
+NEIGHBOR_OFFSETS = [
+    (-1, 0),
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (1, 0),
+    (0, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+]
 
 
 class Editor:
@@ -13,18 +30,36 @@ class Editor:
         pygame.init()
 
         pygame.display.set_caption("editor")
-        self.screen = pygame.display.set_mode((640, 480))
-        self.display = pygame.Surface((320, 240))
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        self.display = pygame.Surface((DISPLAY_WIDTH, DISPLAY_HEIGHT))
 
         self.clock = pygame.time.Clock()
 
         self.assets = {
             "decor": load_images("tiles/decor"),
             "grass": load_images("tiles/grass"),
+            "wall": load_images("tiles/wall"),
             "large_decor": load_images("tiles/large_decor"),
             "stone": load_images("tiles/stone"),
             "spawners": load_images("tiles/spawners"),
+            "jump_pad": load_images("tiles/jump_pad"),
+            "lever": load_images("tiles/lever", 1),
+            "block": load_images("tiles/block"),
+            "door": load_images("tiles/door"),
         }
+
+        for i in range(len(self.assets["jump_pad"])):
+            self.assets["jump_pad"][i] = pygame.transform.scale(
+                self.assets["jump_pad"][i], [16, 16]
+            )
+        for i in range(len(self.assets["lever"])):
+            self.assets["lever"][i] = pygame.transform.scale(
+                self.assets["lever"][i], [16, 16]
+            )
+        for i in range(len(self.assets["door"])):
+            self.assets["door"][i] = pygame.transform.scale(
+                self.assets["door"][i], [16, 16]
+            )
 
         self.movement = [False, False, False, False]
 
@@ -45,10 +80,50 @@ class Editor:
         self.right_clicking = False
         self.shift = False
         self.ongrid = True
+        self.big = False
+
+    def get_map_list(self):
+        map_list = []
+        for filename in os.listdir():
+            if filename.endswith(".json") and not filename.endswith("_temp.json"):
+                map_list.append(filename)
+        return map_list
+
+    def save_current_map(self, map_name):
+        temp_filename = map_name.replace(".json", "_temp.json")
+        self.tilemap.save(temp_filename)
+        print(f"Saved {temp_filename}")
+
+    def load_map(self, map_name):
+        map_file = map_name
+        temp_filename = map_name.replace(".json", "_temp.json")
+
+        if os.path.exists(temp_filename):
+            self.tilemap.load(temp_filename)
+            print(f"Loaded {temp_filename}")
+        else:
+            self.tilemap.load(map_file)
+            print(f"Loaded {map_file}")
+
+    def cleanup_temp_files(self):
+        map_files = os.listdir()
+        for map_file in map_files:
+            if map_file.endswith("_temp.json"):
+                os.remove(map_file)
 
     def run(self):
+        map_list = self.get_map_list()
+        selected_map_index = 0
+        current_map = None
+
         while True:
             self.display.fill((0, 0, 0))
+
+            if current_map is None:
+                current_map = map_list[selected_map_index]
+                self.load_map(current_map)
+                self.scroll[0] = 0
+                self.scroll[1] = 0
 
             self.scroll[0] += (self.movement[1] - self.movement[0]) * 2
             self.scroll[1] += (self.movement[3] - self.movement[2]) * 2
@@ -84,7 +159,21 @@ class Editor:
                     "type": self.tile_list[self.tile_group],
                     "variant": self.tile_variant,
                     "pos": tile_pos,
+                    "blockShake": 0,
                 }
+                if self.big:
+                    for shift in (NEIGHBOR_OFFSETS):
+                        self.tilemap.tilemap[
+                            str(tile_pos[0] + shift[0])
+                            + ";"
+                            + str(tile_pos[1] + shift[1])
+                        ] = {
+                            "type": self.tile_list[self.tile_group],
+                            "variant": self.tile_variant,
+                            "pos": (tile_pos[0] + shift[0], tile_pos[1] + shift[1]),
+                            "blockShake": 0,
+                        }
+
             if self.right_clicking:
                 tile_loc = str(tile_pos[0]) + ";" + str(tile_pos[1])
                 if tile_loc in self.tilemap.tilemap:
@@ -99,11 +188,21 @@ class Editor:
                     )
                     if tile_r.collidepoint(mpos):
                         self.tilemap.offgrid_tiles.remove(tile)
+                if self.big:
+                    for shift in NEIGHBOR_OFFSETS:
+                        tile_loc = (
+                            str(tile_pos[0] + shift[0])
+                            + ";"
+                            + str(tile_pos[1] + shift[1])
+                        )
+                        if tile_loc in self.tilemap.tilemap:
+                            del self.tilemap.tilemap[tile_loc]
 
             self.display.blit(current_tile_img, (5, 5))
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
+                    self.cleanup_temp_files()
                     pygame.quit()
                     sys.exit()
 
@@ -143,6 +242,7 @@ class Editor:
                                 self.tile_list
                             )
                             self.tile_variant = 0
+
                 if event.type == pygame.MOUSEBUTTONUP:
                     if event.button == 1:
                         self.clicking = False
@@ -163,9 +263,13 @@ class Editor:
                     if event.key == pygame.K_t:
                         self.tilemap.autotile()
                     if event.key == pygame.K_o:
-                        self.tilemap.save("map.json")
+                        self.tilemap.save(current_map)
                     if event.key == pygame.K_LSHIFT:
                         self.shift = True
+                    if event.key == pygame.K_b:
+                        self.big = not self.big
+                        print("big: ", self.big)
+
                 if event.type == pygame.KEYUP:
                     if event.key == pygame.K_a:
                         self.movement[0] = False
@@ -177,6 +281,25 @@ class Editor:
                         self.movement[3] = False
                     if event.key == pygame.K_LSHIFT:
                         self.shift = False
+
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_UP:
+                        self.save_current_map(current_map)
+                        selected_map_index = (selected_map_index - 1) % len(map_list)
+                        current_map = None
+                    elif event.key == pygame.K_DOWN:
+                        self.save_current_map(current_map)
+                        selected_map_index = (selected_map_index + 1) % len(map_list)
+                        current_map = None
+
+            for idx, map_filename in enumerate(map_list):
+                color = (255, 255, 255)
+                if idx == selected_map_index:
+                    color = (0, 255, 0)
+                map_label = pygame.font.Font(None, 10).render(map_filename, True, color)
+                label_x = self.display.get_width() - map_label.get_width() - 10
+                label_y = 30 + idx * 10
+                self.display.blit(map_label, (label_x, label_y))
 
             self.screen.blit(
                 pygame.transform.scale(self.display, self.screen.get_size()), (0, 0)
